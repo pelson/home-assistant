@@ -27,7 +27,8 @@ import homeassistant.remote as rem
 import homeassistant.util as hass_util
 from homeassistant.util.logging import HideSensitiveDataFilter
 
-from .auth import auth_middleware
+from .auth import (assert_authz, auth_middleware,
+    authorized_resource, require_authorization)
 from .ban import ban_middleware
 from .const import (
     KEY_BANS_ENABLED, KEY_AUTHENTICATED, KEY_LOGIN_THRESHOLD,
@@ -255,14 +256,17 @@ class HomeAssistantWSGI(object):
 
         self.app.router.add_route('GET', url, redirect)
 
-    def register_static_path(self, url_path, path, cache_headers=True):
+    def register_static_path(self, url_path, path, cache_headers=True,
+                             authorization_scope=None):
         """Register a folder or file to serve as a static path."""
         if os.path.isdir(path):
             if cache_headers:
-                resource = CachingStaticResource
+                resource = CachingStaticResource(url_path, path)
             else:
-                resource = web.StaticResource
-            self.app.router.register_resource(resource(url_path, path))
+                resource = web.StaticResource(url_path, path)
+            if authorization_scope:
+                resource = authorized_resource(resource, authorization_scope)
+            self.app.router.register_resource(resource)
             return
 
         if cache_headers:
@@ -287,6 +291,9 @@ class HomeAssistantWSGI(object):
             url_pattern = "{}/{{filename:{}}}".format(base, regex)
         else:
             url_pattern = url_path
+
+        if authorization_scope:
+            serve_file = require_authorization(authorization_scope)(serve_file)
 
         self.app.router.add_route('GET', url_pattern, serve_file)
 
@@ -416,13 +423,12 @@ def request_handler_factory(view, handler):
             return web.Response(status=503)
 
         remote_addr = get_real_ip(request)
-        authenticated = request.get(KEY_AUTHENTICATED, False)
 
-        if view.requires_auth and not authenticated:
-            raise HTTPUnauthorized()
+        if view.requires_auth:
+            assert_authz(request, scope=view.requires_auth)
 
         _LOGGER.info('Serving %s to %s (auth: %s)',
-                     request.path, remote_addr, authenticated)
+                     request.path, remote_addr, bool(view.requires_auth))
 
         result = handler(request, **request.match_info)
 

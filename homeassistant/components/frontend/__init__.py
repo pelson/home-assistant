@@ -342,7 +342,9 @@ def async_setup(hass, config):
 
     local = hass.config.path('www')
     if os.path.isdir(local):
-        hass.http.register_static_path("/local", local, not is_dev)
+        hass.http.register_static_path(
+            "/local", local,
+            cache_headers=not is_dev, authorization_scope='view_local')
 
     index_view = IndexView(repo_path, js_version)
     hass.http.register_view(index_view)
